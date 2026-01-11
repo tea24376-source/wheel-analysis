@@ -6,17 +6,15 @@ from scipy.signal import savgol_filter
 import tempfile
 import os
 
-# アプリのタイトルとレイアウト設定
-st.set_page_config(page_title="台車解析アプリ V1", layout="wide")
-st.title("🏃‍♂️ 物理実験：台車の速度解析")
+st.set_page_config(page_title="台車解析アプリ V1 (Pink)", layout="wide")
+st.title("🏃‍♂️ 物理実験：台車の速度解析 (ピンクマーカー版)")
 
-# サイドバーの設定
 st.sidebar.header("設定")
-radius = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.5, 0.1)
+radius = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1) # 3.2cmの半分=1.6
 
-# 色の設定 (V1: 緑と青)
+# --- 色の定義 (緑とピンク) ---
 LOWER_GREEN = (np.array([30, 40, 40]), np.array([100, 255, 255]))
-LOWER_BLUE = (np.array([90, 50, 50]), np.array([150, 255, 255]))
+LOWER_PINK = (np.array([140, 50, 50]), np.array([175, 255, 255]))
 
 uploaded_file = st.file_uploader("iPadで撮った動画を選択してください", type=["mp4", "mov"])
 
@@ -30,7 +28,6 @@ if uploaded_file is not None:
     h_orig = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # 動画書き出し準備
     out_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_writer = cv2.VideoWriter(out_video_path, fourcc, fps, (w_orig, h_orig))
@@ -66,14 +63,15 @@ if uploaded_file is not None:
                 cv2.circle(frame, (int(gx), int(gy)), 10, (0, 255, 0), -1)
         else: gx, gy = last_gx, last_gy
 
-        # 青（円周点）
-        mask_b = cv2.inRange(hsv_masked, LOWER_BLUE[0], LOWER_BLUE[1])
-        con_b, _ = cv2.findContours(mask_b, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if con_b:
-            M = cv2.moments(max(con_b, key=cv2.contourArea))
+        # ピンク（円周点）
+        mask_p = cv2.inRange(hsv_masked, LOWER_PINK[0], LOWER_PINK[1])
+        con_p, _ = cv2.findContours(mask_p, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if con_p:
+            M = cv2.moments(max(con_p, key=cv2.contourArea))
             if M["m00"] != 0:
                 bx, by = M["m10"]/M["m00"], M["m01"]/M["m00"]
-                cv2.circle(frame, (int(bx), int(by)), 10, (255, 0, 0), -1)
+                # ピンク色で描画
+                cv2.circle(frame, (int(bx), int(by)), 10, (147, 20, 255), -1)
 
         if pd.notna(gx) and pd.notna(bx):
             current_angle = np.arctan2(by - gy, bx - gx)
@@ -93,7 +91,6 @@ if uploaded_file is not None:
     cap.release()
     out_writer.release()
     
-    # --- データ処理 ---
     df = pd.DataFrame(data_log).interpolate().fillna(method='bfill')
     if len(df) > 31:
         df["Distance"] = savgol_filter(df["Distance"], window_length=15, polyorder=2)
@@ -103,15 +100,11 @@ if uploaded_file is not None:
         df["Speed"] = df["Distance"].diff().fillna(0) * fps
     df["Speed"] = df["Speed"].clip(lower=0)
 
-    # --- 🌟 ここから表示レイアウトの変更 🌟 ---
-    st.success("解析が完了しました！")
+    st.success("解析完了！")
     
-    # 画面を分割 (左:数値 1、右:グラフ 2 の比率)
     col_metrics, col_charts = st.columns([1, 2])
-
     with col_metrics:
         st.subheader("📊 最終計測値")
-        # 数値をカード形式で表示
         st.metric("合計時間", f"{df['Time'].iloc[-1]:.2f} s")
         st.metric("走行距離", f"{df['Distance'].iloc[-1]:.1f} cm")
         st.metric("最大速度", f"{df['Speed'].max():.1f} cm/s")
@@ -119,16 +112,11 @@ if uploaded_file is not None:
 
     with col_charts:
         st.subheader("📈 解析グラフ")
-        # タブを使ってグラフを切り替え可能に
         tab1, tab2 = st.tabs(["速度 (Speed)", "距離 (Distance)"])
-        with tab1:
-            st.line_chart(df.set_index("Time")["Speed"])
-        with tab2:
-            st.line_chart(df.set_index("Time")["Distance"])
+        with tab1: st.line_chart(df.set_index("Time")["Speed"])
+        with tab2: st.line_chart(df.set_index("Time")["Distance"])
 
     st.divider()
-    
-    # 📁 保存セクション
     st.subheader("📁 データのダウンロード")
     dl_col1, dl_col2 = st.columns(2)
     with dl_col1:
