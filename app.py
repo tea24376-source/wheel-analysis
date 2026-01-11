@@ -10,41 +10,42 @@ import io
 
 # Matplotlib設定
 plt.switch_backend('Agg')
+plt.rcParams['mathtext.fontset'] = 'cm' # 数式をイタリックにするための設定
 
-# --- グラフ描画関数 (NumPy配列の画像を返す) ---
-def create_graph_image(df_sub, x_col, y_col, xlabel, ylabel, x_unit, y_unit, color, size, x_max, y_min, y_max):
-    # 1:1のアスペクト比を維持
+# --- グラフ描画関数 ---
+def create_graph_image(df_sub, x_col, y_col, x_label_text, y_label_text, x_unit, y_unit, color, size, x_max, y_min, y_max):
     fig, ax = plt.subplots(figsize=(size/100, size/100), dpi=100)
     
     if len(df_sub) > 0:
         ax.plot(df_sub[x_col], df_sub[y_col], color=color, linewidth=2)
         ax.scatter(df_sub[x_col].iloc[-1], df_sub[y_col].iloc[-1], color=color, s=50)
     
-    ax.set_title(f"{ylabel} - {xlabel}", fontsize=14, fontweight='bold')
-    ax.set_xlabel(f"{xlabel} [{x_unit}]", fontsize=12)
-    ax.set_ylabel(f"{ylabel} [{y_unit}]", fontsize=12)
+    # イタリック表記のラベル
+    ax.set_title(f"${y_label_text}$ - ${x_label_text}$", fontsize=16, fontweight='bold')
+    ax.set_xlabel(f"${x_label_text}$ [{x_unit}]", fontsize=14)
+    ax.set_ylabel(f"${y_label_text}$ [{y_unit}]", fontsize=14)
+    
     ax.set_xlim(0, x_max if x_max > 0 else 1)
-    # y軸の幅を計算
     y_range = y_max - y_min
     if y_range == 0: y_range = 1
     ax.set_ylim(y_min - y_range*0.1, y_max + y_range*0.1)
     ax.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
     
-    # 画像に変換
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", transparent=False, facecolor='white')
+    fig.savefig(buf, format="png", facecolor='white')
     buf.seek(0)
     img = cv2.imdecode(np.frombuffer(buf.getvalue(), dtype=np.uint8), 1)
     plt.close(fig)
     return cv2.resize(img, (size, size))
 
-st.set_page_config(page_title="Physics Lab: Cart Analysis Pro", layout="wide")
-st.title("🚀 物理実験：台車の運動解析システム")
+st.set_page_config(page_title="Physics Lab Pro", layout="wide")
+st.title("🚀 物理実験：台車の運動解析システム (Pro V2.0)")
 
+# --- サイドバー設定 ---
 st.sidebar.header("実験パラメータ")
 radius_cm = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1)
-mass = 0.1 # kg
+mass = 0.1 
 mask_size = st.sidebar.slider("解析エリア半径 (px)", 50, 400, 200, 10)
 
 LOWER_GREEN = (np.array([35, 50, 50]), np.array([85, 255, 255]))
@@ -102,7 +103,7 @@ if uploaded_file is not None:
                 diff = current_angle - prev_angle
                 if diff > np.pi: diff -= 2 * np.pi
                 if diff < -np.pi: diff += 2 * np.pi
-                total_angle -= diff 
+                total_angle -= diff # 右回転を正にする
             prev_angle = current_angle
 
         data_log.append({"t": frame_count/fps, "x": total_angle * (radius_cm/100), "gx": gx, "gy": gy, "bx": bx, "by": by})
@@ -122,25 +123,27 @@ if uploaded_file is not None:
     a_min, a_max = df["a"].min(), df["a"].max()
     F_min, F_max = df["F"].min(), df["F"].max()
 
-    # --- ブラウザ表示修正 (st.pyplotからst.imageへ) ---
-    st.subheader("📊 物理グラフプレビュー (縦並び 1:1)")
+    st.subheader("📊 物理グラフプレビュー")
     plot_size = 500
     st.image(create_graph_image(df, "t", "x", "t", "x", "s", "m", "blue", plot_size, t_max, 0, x_max), channels="BGR")
     st.image(create_graph_image(df, "t", "v", "t", "v", "s", "m/s", "red", plot_size, t_max, v_min, v_max), channels="BGR")
-    st.image(create_graph_image(df, "t", "a", "t", "a", "s", "m/s2", "green", plot_size, t_max, a_min, a_max), channels="BGR")
+    st.image(create_graph_image(df, "t", "a", "t", "a", "s", "m/s^2", "green", plot_size, t_max, a_min, a_max), channels="BGR")
     st.image(create_graph_image(df, "x", "F", "x", "F", "m", "N", "purple", plot_size, x_max, F_min, F_max), channels="BGR")
 
     # --- Step 3: 動画合成 ---
     status.info("Step 3: 動画を合成中...")
     graph_v_size = w_orig // 4
-    header_h = graph_v_size + 80 
+    header_h = graph_v_size + 100 
     new_h = h_orig + header_h
     
     final_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
     out = cv2.VideoWriter(final_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w_orig, new_h))
 
     cap_retry = cv2.VideoCapture(tfile.name)
-    font = cv2.FONT_HERSHEY_SIMPLEX
+    # フォント設定 (イタリックフラグ追加)
+    font = cv2.FONT_HERSHEY_SIMPLEX | cv2.FONT_ITALIC
+    f_scale = 1.0 # tに合わせて少し大きく設定
+    thickness = 2
 
     for i in range(len(df)):
         ret, frame = cap_retry.read()
@@ -153,7 +156,7 @@ if uploaded_file is not None:
         # 4枚のグラフ
         g1 = create_graph_image(df_s, "t", "x", "t", "x", "s", "m", "blue", graph_v_size, t_max, 0, x_max)
         g2 = create_graph_image(df_s, "t", "v", "t", "v", "s", "m/s", "red", graph_v_size, t_max, v_min, v_max)
-        g3 = create_graph_image(df_s, "t", "a", "t", "a", "s", "m/s2", "green", graph_v_size, t_max, a_min, a_max)
+        g3 = create_graph_image(df_s, "t", "a", "t", "a", "s", "m/s^2", "green", graph_v_size, t_max, a_min, a_max)
         g4 = create_graph_image(df_s, "x", "F", "x", "F", "m", "N", "purple", graph_v_size, x_max, F_min, F_max)
 
         canvas[0:graph_v_size, 0:graph_v_size] = g1
@@ -161,34 +164,47 @@ if uploaded_file is not None:
         canvas[0:graph_v_size, graph_v_size*2:graph_v_size*3] = g3
         canvas[0:graph_v_size, graph_v_size*3:graph_v_size*4] = g4
 
-        # 数値表示
-        y_text = graph_v_size + 50
-        x_str = f"x:{curr['x']:>7.3f} m"
-        v_str = f"v:{curr['v']:>7.2f} m/s"
-        a_str = f"a:{curr['a']:>7.2f} m/s2"
-        f_str = f"F:{curr['F']:>7.3f} N"
+        # 数値表示（中央揃えロジック）
+        y_text = graph_v_size + 60
+        labels = [
+            f"x: {curr['x']:7.3f} m",
+            f"v: {curr['v']:7.2f} m/s",
+            f"a: {curr['a']:7.2f} m/s2",
+            f"F: {curr['F']:7.3f} N"
+        ]
 
-        cv2.putText(canvas, x_str, (10, y_text), font, 0.8, (255, 255, 255), 2)
-        cv2.putText(canvas, v_str, (graph_v_size + 10, y_text), font, 0.8, (255, 255, 255), 2)
-        cv2.putText(canvas, a_str, (graph_v_size * 2 + 10, y_text), font, 0.8, (255, 255, 255), 2)
-        cv2.putText(canvas, f_str, (graph_v_size * 3 + 10, y_text), font, 0.8, (255, 255, 255), 2)
+        for idx, text in enumerate(labels):
+            # テキストの幅を取得して中央位置を計算
+            text_size = cv2.getTextSize(text, font, f_scale, thickness)[0]
+            start_x = idx * graph_v_size + (graph_v_size - text_size[0]) // 2
+            cv2.putText(canvas, text, (start_x, y_text), font, f_scale, (255, 255, 255), thickness)
+
+        # トラッキング点描画（元フレームに上書き）
+        if pd.notna(curr['gx']):
+            cv2.circle(frame, (int(curr['gx']), int(curr['gy'])), mask_size, (255, 255, 255), 2)
+            cv2.circle(frame, (int(curr['gx']), int(curr['gy'])), 6, (0, 255, 0), -1)
+            if pd.notna(curr['bx']):
+                cv2.circle(frame, (int(curr['bx']), int(curr['by'])), 6, (255, 0, 255), -1)
+                cv2.line(frame, (int(curr['gx']), int(curr['gy'])), (int(curr['bx']), int(curr['by'])), (255, 255, 255), 1)
 
         canvas[header_h:new_h, 0:w_orig] = frame
-        cv2.putText(canvas, f"t: {curr['t']:>6.2f} s", (w_orig - 220, new_h - 40), font, 1.2, (255, 255, 255), 3)
+        
+        # 時刻t（右下、イタリック）
+        t_text = f"t: {curr['t']:6.2f} s"
+        t_size = cv2.getTextSize(t_text, font, 1.2, 3)[0]
+        cv2.putText(canvas, t_text, (w_orig - t_size[0] - 20, new_h - 40), font, 1.2, (255, 255, 255), 3)
 
         out.write(canvas)
         if i % 10 == 0: progress_bar.progress(0.3 + (i / len(df)) * 0.7)
 
     cap_retry.release()
     out.release()
-    status.success("解析完了！")
+    status.success("すべての工程が完了しました！")
 
     st.divider()
-    # CSV保存 (mimeタイプとファイル名を修正)
     csv_data = df[["t", "x", "v", "a", "F"]].to_csv(index=False).encode('utf_8_sig')
-    st.download_button(label="📊 CSVデータを保存", data=csv_data, file_name="physics_data.csv", mime="text/csv")
-    
+    st.download_button(label="📊 CSVデータを保存", data=csv_data, file_name="physics_data_pro.csv", mime="text/csv")
     with open(final_video_path, "rb") as v:
-        st.download_button(label="🎥 解析済み動画を保存", data=v, file_name="physics_analysis.mp4", mime="video/mp4")
+        st.download_button(label="🎥 解析済み動画を保存", data=v, file_name="physics_analysis_pro.mp4", mime="video/mp4")
 
     os.remove(tfile.name)
