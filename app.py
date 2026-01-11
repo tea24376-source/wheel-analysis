@@ -6,18 +6,16 @@ from scipy.signal import savgol_filter
 import tempfile
 import os
 
-# アプリのタイトルとレイアウト設定
-st.set_page_config(page_title="台車解析アプリ V1.1", layout="wide")
-st.title("🏃‍♂️ 物理実験：台車の速度解析 (円形マスク版)")
+st.set_page_config(page_title="台車解析アプリ V1.2", layout="wide")
+st.title("🏃‍♂️ 物理実験：台車の速度解析 (追跡強化版)")
 
-# サイドバーの設定
 st.sidebar.header("設定")
 radius_cm = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1)
-mask_size = st.sidebar.slider("解析エリアの半径 (px)", 50, 300, 150, 10)
-st.sidebar.info("ピンクの点が認識されない場合は「解析エリアの半径」を大きくしてください。")
+mask_size = st.sidebar.slider("解析エリアの半径 (px)", 50, 400, 200, 10)
+st.sidebar.info("解析エリア（白い円）の中にピンクの点が入るように調整してください。")
 
-# 色の設定 (緑とピンク)
-LOWER_GREEN = (np.array([30, 40, 40]), np.array([90, 255, 255]))
+# 色の設定 (緑とピンク) - 緑を少し絞って精度向上
+LOWER_GREEN = (np.array([35, 50, 50]), np.array([85, 255, 255]))
 LOWER_PINK = (np.array([140, 40, 40]), np.array([180, 255, 255]))
 
 uploaded_file = st.file_uploader("iPadで撮った動画を選択してください", type=["mp4", "mov"])
@@ -28,16 +26,15 @@ if uploaded_file is not None:
     
     cap = cv2.VideoCapture(tfile.name)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    w_orig = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h_orig = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    w_orig = int(cap.get(cv2.CAP_PROP_WIDTH))
+    h_orig = int(cap.get(cv2.CAP_PROP_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # 動画書き出し準備
     out_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_writer = cv2.VideoWriter(out_video_path, fourcc, fps, (w_orig, h_orig))
 
-    st.info("動画を解析・生成中です...")
+    st.info("解析中です。完了までアプリを閉じずにお待ちください...")
     progress_bar = st.progress(0)
     
     data_log = []
@@ -52,30 +49,43 @@ if uploaded_file is not None:
         
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # 1. 緑（中心）を画面全体から探す
+        # --- 1. 緑（中心）の追跡ロジック改良 ---
         mask_g = cv2.inRange(hsv, LOWER_GREEN[0], LOWER_GREEN[1])
         con_g, _ = cv2.findContours(mask_g, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        new_gx, new_gy = np.nan, np.nan
-        if con_g:
-            # 最も面積が大きいものを中心候補とする
-            c = max(con_g, key=cv2.contourArea)
-            M = cv2.moments(c)
-            if M["m00"] != 0:
-                temp_gx, temp_gy = M["m10"]/M["m00"], M["m01"]/M["m00"]
-                
-                # 急激なジャンプ防止：前回と近ければ採用
-                if pd.isna(gx) or np.hypot(temp_gx - gx, temp_gy - gy) < 100:
-                    gx, gy = temp_gx, temp_gy
+        best_gx, best_gy = np.nan, np.nan
+        min_dist = float('inf')
         
+        if con_g:
+            for c in con_g:
+                if cv2.contourArea(c) < 20: continue # 小さすぎるノイズは無視
+                M = cv2.moments(c)
+                if M["m00"] != 0:
+                    curr_x, curr_y = M["m10"]/M["m00"], M["m01"]/M["m00"]
+                    
+                    if pd.isna(gx): # 初回フレームは一番大きいものを採用
+                        best_gx, best_gy = curr_x, curr_y
+                        break 
+                    else: # 2フレーム目以降は「前回に一番近いもの」を採用
+                        dist = np.hypot(curr_x - gx, curr_y - gy)
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_gx, best_gy = curr_x, curr_y
+            
+            # あまりに遠すぎる（画面幅の半分以上など）場合は誤認識とみなして更新しない
+            if pd.notna(best_gx):
+                if pd.isna(gx) or min_dist < (w_orig / 2):
+                    gx, gy = best_gx, best_gy
+
+        # --- 2. ピンク（円周点）の検出 ---
         bx, by = np.nan, np.nan
-        # 2. 緑が見つかっている場合のみ、その周辺にピンクを探す（円形マスク）
         if pd.notna(gx):
+            # 緑の中心をベースに円形マスクを作成
             circle_mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
             cv2.circle(circle_mask, (int(gx), int(gy)), mask_size, 255, -1)
             
-            hsv_near_wheel = cv2.bitwise_and(hsv, hsv, mask=circle_mask)
-            mask_p = cv2.inRange(hsv_near_wheel, LOWER_PINK[0], LOWER_PINK[1])
+            hsv_masked = cv2.bitwise_and(hsv, hsv, mask=circle_mask)
+            mask_p = cv2.inRange(hsv_masked, LOWER_PINK[0], LOWER_PINK[1])
             con_p, _ = cv2.findContours(mask_p, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if con_p:
@@ -84,13 +94,12 @@ if uploaded_file is not None:
                 if M_p["m00"] != 0:
                     bx, by = M_p["m10"]/M_p["m00"], M_p["m01"]/M_p["m00"]
 
-            # 動画への描画
-            # 認識しているホイールの円を描画
-            cv2.circle(frame, (int(gx), int(gy)), mask_size, (255, 255, 255), 2) # 白い外枠
-            cv2.circle(frame, (int(gx), int(gy)), 8, (0, 255, 0), -1)           # 中心（緑）
+            # 動画へのガイド描画
+            cv2.circle(frame, (int(gx), int(gy)), mask_size, (255, 255, 255), 2) # 白い解析円
+            cv2.circle(frame, (int(gx), int(gy)), 8, (0, 255, 0), -1)           # 緑中心
             if pd.notna(bx):
-                cv2.circle(frame, (int(bx), int(by)), 8, (147, 20, 255), -1)   # マーカー（ピンク）
-                cv2.line(frame, (int(gx), int(gy)), (int(bx), int(by)), (200, 200, 200), 2) # 半径の線
+                cv2.circle(frame, (int(bx), int(by)), 8, (147, 20, 255), -1)   # ピンク点
+                cv2.line(frame, (int(gx), int(gy)), (int(bx), int(by)), (255, 255, 255), 2)
 
         # 角度計算
         if pd.notna(gx) and pd.notna(bx):
@@ -111,7 +120,7 @@ if uploaded_file is not None:
     cap.release()
     out_writer.release()
     
-    # --- データ処理 ---
+    # データ処理と平滑化
     df = pd.DataFrame(data_log).interpolate().fillna(method='ffill').fillna(method='bfill')
     if len(df) > 31:
         df["Distance"] = savgol_filter(df["Distance"], window_length=15, polyorder=2)
@@ -121,31 +130,25 @@ if uploaded_file is not None:
         df["Speed"] = df["Distance"].diff().fillna(0) * fps
     df["Speed"] = df["Speed"].clip(lower=0)
 
-    # --- 表示レイアウト ---
+    # UI表示
     st.success("解析が完了しました！")
     col_metrics, col_charts = st.columns([1, 2])
-
     with col_metrics:
-        st.subheader("📊 最終計測値")
-        st.metric("合計時間", f"{df['Time'].iloc[-1]:.2f} s")
+        st.subheader("📊 計測結果")
         st.metric("走行距離", f"{df['Distance'].iloc[-1]:.1f} cm")
         st.metric("最大速度", f"{df['Speed'].max():.1f} cm/s")
         st.metric("平均速度", f"{(df['Distance'].iloc[-1]/df['Time'].iloc[-1]) if df['Time'].iloc[-1]>0 else 0:.1f} cm/s")
-
     with col_charts:
-        st.subheader("📈 解析グラフ")
-        tab1, tab2 = st.tabs(["速度 (Speed)", "距離 (Distance)"])
+        tab1, tab2 = st.tabs(["速度", "距離"])
         with tab1: st.line_chart(df.set_index("Time")["Speed"])
         with tab2: st.line_chart(df.set_index("Time")["Distance"])
 
     st.divider()
-    st.subheader("📁 データのダウンロード")
     dl_col1, dl_col2 = st.columns(2)
     with dl_col1:
         csv = df.to_csv(index=False).encode('utf_8_sig')
-        st.download_button("📊 CSVデータを保存", data=csv, file_name="result_data.csv", mime="text/csv")
+        st.download_button("📊 CSV保存", data=csv, file_name="result.csv", mime="text/csv")
     with dl_col2:
         with open(out_video_path, "rb") as v_file:
-            st.download_button("🎥 解析済み動画を保存", data=v_file, file_name="analyzed_video.mp4", mime="video/mp4")
-
+            st.download_button("🎥 解析済み動画を保存", data=v_file, file_name="analyzed.mp4", mime="video/mp4")
     os.remove(tfile.name)
