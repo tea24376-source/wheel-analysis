@@ -6,15 +6,14 @@ from scipy.signal import savgol_filter
 import tempfile
 import os
 
-st.set_page_config(page_title="台車解析アプリ V1.2", layout="wide")
-st.title("🏃‍♂️ 物理実験：台車の速度解析 (追跡強化版)")
+st.set_page_config(page_title="台車解析アプリ V1.2.1", layout="wide")
+st.title("🏃‍♂️ 物理実験：台車の速度解析 (追跡強化版・修正済)")
 
 st.sidebar.header("設定")
 radius_cm = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1)
 mask_size = st.sidebar.slider("解析エリアの半径 (px)", 50, 400, 200, 10)
-st.sidebar.info("解析エリア（白い円）の中にピンクの点が入るように調整してください。")
 
-# 色の設定 (緑とピンク) - 緑を少し絞って精度向上
+# 色の設定 (緑とピンク)
 LOWER_GREEN = (np.array([35, 50, 50]), np.array([85, 255, 255]))
 LOWER_PINK = (np.array([140, 40, 40]), np.array([180, 255, 255]))
 
@@ -26,8 +25,10 @@ if uploaded_file is not None:
     
     cap = cv2.VideoCapture(tfile.name)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    w_orig = int(cap.get(cv2.CAP_PROP_WIDTH))
-    h_orig = int(cap.get(cv2.CAP_PROP_HEIGHT))
+    # --- ここを修正しました ---
+    w_orig = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h_orig = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # -----------------------
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     out_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
@@ -49,7 +50,6 @@ if uploaded_file is not None:
         
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # --- 1. 緑（中心）の追跡ロジック改良 ---
         mask_g = cv2.inRange(hsv, LOWER_GREEN[0], LOWER_GREEN[1])
         con_g, _ = cv2.findContours(mask_g, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -58,29 +58,26 @@ if uploaded_file is not None:
         
         if con_g:
             for c in con_g:
-                if cv2.contourArea(c) < 20: continue # 小さすぎるノイズは無視
+                if cv2.contourArea(c) < 20: continue
                 M = cv2.moments(c)
                 if M["m00"] != 0:
                     curr_x, curr_y = M["m10"]/M["m00"], M["m01"]/M["m00"]
                     
-                    if pd.isna(gx): # 初回フレームは一番大きいものを採用
+                    if pd.isna(gx):
                         best_gx, best_gy = curr_x, curr_y
                         break 
-                    else: # 2フレーム目以降は「前回に一番近いもの」を採用
+                    else:
                         dist = np.hypot(curr_x - gx, curr_y - gy)
                         if dist < min_dist:
                             min_dist = dist
                             best_gx, best_gy = curr_x, curr_y
             
-            # あまりに遠すぎる（画面幅の半分以上など）場合は誤認識とみなして更新しない
             if pd.notna(best_gx):
                 if pd.isna(gx) or min_dist < (w_orig / 2):
                     gx, gy = best_gx, best_gy
 
-        # --- 2. ピンク（円周点）の検出 ---
         bx, by = np.nan, np.nan
         if pd.notna(gx):
-            # 緑の中心をベースに円形マスクを作成
             circle_mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
             cv2.circle(circle_mask, (int(gx), int(gy)), mask_size, 255, -1)
             
@@ -94,14 +91,12 @@ if uploaded_file is not None:
                 if M_p["m00"] != 0:
                     bx, by = M_p["m10"]/M_p["m00"], M_p["m01"]/M_p["m00"]
 
-            # 動画へのガイド描画
-            cv2.circle(frame, (int(gx), int(gy)), mask_size, (255, 255, 255), 2) # 白い解析円
-            cv2.circle(frame, (int(gx), int(gy)), 8, (0, 255, 0), -1)           # 緑中心
+            cv2.circle(frame, (int(gx), int(gy)), mask_size, (255, 255, 255), 2)
+            cv2.circle(frame, (int(gx), int(gy)), 8, (0, 255, 0), -1)
             if pd.notna(bx):
-                cv2.circle(frame, (int(bx), int(by)), 8, (147, 20, 255), -1)   # ピンク点
+                cv2.circle(frame, (int(bx), int(by)), 8, (147, 20, 255), -1)
                 cv2.line(frame, (int(gx), int(gy)), (int(bx), int(by)), (255, 255, 255), 2)
 
-        # 角度計算
         if pd.notna(gx) and pd.notna(bx):
             current_angle = np.arctan2(by - gy, bx - gx)
             if prev_angle is not None:
@@ -120,8 +115,8 @@ if uploaded_file is not None:
     cap.release()
     out_writer.release()
     
-    # データ処理と平滑化
-    df = pd.DataFrame(data_log).interpolate().fillna(method='ffill').fillna(method='bfill')
+    # データ処理 (Pandasの新しい書き方に合わせて少し微調整)
+    df = pd.DataFrame(data_log).interpolate().ffill().bfill()
     if len(df) > 31:
         df["Distance"] = savgol_filter(df["Distance"], window_length=15, polyorder=2)
         raw_speed = df["Distance"].diff().fillna(0) * fps
@@ -130,7 +125,6 @@ if uploaded_file is not None:
         df["Speed"] = df["Distance"].diff().fillna(0) * fps
     df["Speed"] = df["Speed"].clip(lower=0)
 
-    # UI表示
     st.success("解析が完了しました！")
     col_metrics, col_charts = st.columns([1, 2])
     with col_metrics:
