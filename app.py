@@ -11,83 +11,70 @@ import io
 # Matplotlibのバックエンド設定
 plt.switch_backend('Agg')
 
-# --- グラフ画像を生成する関数 (動的描画用) ---
-def create_dynamic_graph(df_sub, x_col, y_col, title, color, target_width, target_height, x_max, y_max):
-    # 常に同じスケールのグラフ枠を作る
-    fig, ax = plt.subplots(figsize=(4, 3), dpi=100)
-    
+# --- グラフ描画関数 ---
+def create_dynamic_graph(df_sub, x_col, y_col, xlabel, ylabel, color, size, x_max, y_min, y_max):
+    fig, ax = plt.subplots(figsize=(size/100, size/100), dpi=100)
     if len(df_sub) > 0:
         ax.plot(df_sub[x_col], df_sub[y_col], color=color, linewidth=2)
-        # 現在地点に点を打つ
-        ax.scatter(df_sub[x_col].iloc[-1], df_sub[y_col].iloc[-1], color=color, s=30)
+        ax.scatter(df_sub[x_col].iloc[-1], df_sub[y_col].iloc[-1], color=color, s=40)
     
-    ax.set_title(title, fontsize=12, fontweight='bold')
-    ax.set_xlim(0, x_max)
-    ax.set_ylim(0, y_max * 1.1) # 少し余裕を持たせる
-    ax.set_xlabel("Time (s)", fontsize=10)
-    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_title(f"{ylabel}-{xlabel}", fontsize=14, fontweight='bold')
+    ax.set_xlim(0, x_max if x_max > 0 else 1)
+    ax.set_ylim(y_min, y_max if y_max > y_min else y_min + 1)
+    ax.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
     
-    # 画像に変換
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", transparent=False, facecolor='white')
+    fig.savefig(buf, format="png", facecolor='white')
     buf.seek(0)
-    img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-    buf.close()
-    img = cv2.imdecode(img_arr, 1)
+    img = cv2.imdecode(np.frombuffer(buf.getvalue(), dtype=np.uint8), 1)
     plt.close(fig)
-    
-    return cv2.resize(img, (target_width, target_height))
+    return cv2.resize(img, (size, size))
 
-# --- メインアプリ ---
-st.set_page_config(page_title="台車解析アプリ Final Pro", layout="wide")
-st.title("🏃‍♂️ 物理実験：台車の速度解析 (グラフ動的合成版)")
+# --- アプリ設定 ---
+st.set_page_config(page_title="Physics Lab: Cart Analysis", layout="wide")
+st.title("🚀 物理実験：台車の運動解析システム")
 
-st.sidebar.header("設定")
+st.sidebar.header("実験パラメータ")
 radius_cm = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1)
-mask_size = st.sidebar.slider("解析エリアの半径 (px)", 50, 400, 200, 10)
+mass = 0.1 # kg
+mask_size = st.sidebar.slider("解析エリア半径 (px)", 50, 400, 200, 10)
 
-# 色の設定
 LOWER_GREEN = (np.array([35, 50, 50]), np.array([85, 255, 255]))
 LOWER_PINK = (np.array([140, 40, 40]), np.array([180, 255, 255]))
 
-uploaded_file = st.file_uploader("動画を選択してください", type=["mp4", "mov"])
+uploaded_file = st.file_uploader("実験動画を選択 (MP4/MOV)", type=["mp4", "mov"])
 
 if uploaded_file is not None:
     tfile = tempfile.NamedTemporaryFile(delete=False)
     tfile.write(uploaded_file.read())
     
-    # --- Step 1: 解析 ---
     cap = cv2.VideoCapture(tfile.name)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     w_orig = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h_orig = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # 中間保存用
-    temp_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    temp_writer = cv2.VideoWriter(temp_video_path, fourcc, fps, (w_orig, h_orig))
-
     status = st.empty()
     progress_bar = st.progress(0)
     
+    # --- Step 1: 解析 ---
+    status.info("Step 1: 映像解析中...")
     data_log = []
     total_angle = 0.0
     prev_angle = None
     gx, gy = np.nan, np.nan
     frame_count = 0
+    frames_tracked = []
 
-    status.info("Step 1/3: 台車の動きを追跡中...")
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
         
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # 緑中心追跡
         mask_g = cv2.inRange(hsv, LOWER_GREEN[0], LOWER_GREEN[1])
         con_g, _ = cv2.findContours(mask_g, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        best_gx, best_gy = np.nan, np.nan
         if con_g:
             c = max(con_g, key=cv2.contourArea)
             M = cv2.moments(c)
@@ -100,20 +87,19 @@ if uploaded_file is not None:
         if pd.notna(gx):
             circle_mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
             cv2.circle(circle_mask, (int(gx), int(gy)), mask_size, 255, -1)
-            hsv_m = cv2.bitwise_and(hsv, hsv, mask=circle_mask)
-            mask_p = cv2.inRange(hsv_m, LOWER_PINK[0], LOWER_PINK[1])
+            mask_p = cv2.inRange(cv2.bitwise_and(hsv, hsv, mask=circle_mask), LOWER_PINK[0], LOWER_PINK[1])
             con_p, _ = cv2.findContours(mask_p, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if con_p:
-                c_p = max(con_p, key=cv2.contourArea)
-                M_p = cv2.moments(c_p)
-                if M_p["m00"] != 0: bx, by = M_p["m10"]/M_p["m00"], M_p["m01"]/M_p["m00"]
+                cp = max(con_p, key=cv2.contourArea)
+                Mp = cv2.moments(cp)
+                if Mp["m00"] != 0: bx, by = Mp["m10"]/Mp["m00"], Mp["m01"]/Mp["m00"]
 
-            # 動画へのガイド描画
+            # 描画
             cv2.circle(frame, (int(gx), int(gy)), mask_size, (255, 255, 255), 2)
-            cv2.circle(frame, (int(gx), int(gy)), 8, (0, 255, 0), -1)
+            cv2.circle(frame, (int(gx), int(gy)), 5, (0, 255, 0), -1)
             if pd.notna(bx):
-                cv2.circle(frame, (int(bx), int(by)), 8, (147, 20, 255), -1)
-                cv2.line(frame, (int(gx), int(gy)), (int(bx), int(by)), (255, 255, 255), 2)
+                cv2.circle(frame, (int(bx), int(by)), 5, (255, 0, 255), -1)
+                cv2.line(frame, (int(gx), int(gy)), (int(bx), int(by)), (255, 255, 255), 1)
 
         if pd.notna(gx) and pd.notna(bx):
             current_angle = np.arctan2(by - gy, bx - gx)
@@ -121,66 +107,94 @@ if uploaded_file is not None:
                 diff = current_angle - prev_angle
                 if diff > np.pi: diff -= 2 * np.pi
                 if diff < -np.pi: diff += 2 * np.pi
-                total_angle += diff
+                # 右回転（CW）を正にするため、OpenCV座標系ではマイナス
+                total_angle -= diff 
             prev_angle = current_angle
 
-        temp_writer.write(frame)
-        data_log.append({"Time": frame_count/fps, "Distance": abs(total_angle) * radius_cm})
+        frames_tracked.append(frame)
+        data_log.append({"t": frame_count/fps, "x": total_angle * (radius_cm/100)})
         frame_count += 1
-        progress_bar.progress(min(frame_count / total_frames * 0.4, 0.4))
-            
+        if frame_count % 10 == 0: progress_bar.progress(min(frame_count / total_frames * 0.3, 0.3))
     cap.release()
-    temp_writer.release()
-    
-    # --- Step 2: データ平滑化 ---
-    status.info("Step 2/3: データを計算中...")
+
+    # --- Step 2: 物理量計算 ---
+    status.info("Step 2: 物理量計算中...")
     df = pd.DataFrame(data_log).interpolate().ffill().bfill()
-    if len(df) > 31:
-        df["Distance"] = savgol_filter(df["Distance"], 15, 2)
-        df["Speed"] = savgol_filter(df["Distance"].diff().fillna(0)*fps, 31, 2)
-    else:
-        df["Speed"] = df["Distance"].diff().fillna(0)*fps
-    df["Speed"] = df["Speed"].clip(lower=0)
+    # 平滑化処理
+    win_v, win_a = 15, 31
+    df["x"] = savgol_filter(df["x"], win_v, 2)
+    df["v"] = savgol_filter(df["x"].diff().fillna(0) * fps, win_a, 2)
+    df["a"] = savgol_filter(df["v"].diff().fillna(0) * fps, win_a, 2)
+    df["F"] = mass * df["a"]
 
-    # グラフの最大値を固定するために取得
-    x_max = df["Time"].max()
-    s_max = df["Speed"].max()
-    d_max = df["Distance"].max()
-    graph_w, graph_h = int(w_orig * 0.35), int(h_orig * 0.28)
+    # 画面にグラフを表示（動画生成を待つ間用）
+    st.subheader("📊 解析結果プレビュー")
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        st.write("x-t / v-t")
+        st.line_chart(df.set_index("t")[["x", "v"]])
+    with col_g2:
+        st.write("a-t / F-x")
+        st.line_chart(df.set_index("t")["a"])
+        st.line_chart(df.set_index("x")["F"])
 
-    # --- Step 3: 動的グラフの合成 ---
-    status.info("Step 3/3: グラフを動画に書き込み中... (少し時間がかかります)")
+    # --- Step 3: 動画合成 ---
+    status.info("Step 3: グラフ動画を合成中 (時間がかかります)...")
+    graph_size = w_orig // 4
+    header_h = graph_size + 60 # グラフ + 数値表示エリア
+    new_h = h_orig + header_h
+    
     final_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
-    final_writer = cv2.VideoWriter(final_video_path, fourcc, fps, (w_orig, h_orig))
-    cap_temp = cv2.VideoCapture(temp_video_path)
+    out = cv2.VideoWriter(final_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w_orig, new_h))
+
+    # スケール固定用
+    x_max, t_max = df["x"].max(), df["t"].max()
+    v_min, v_max = df["v"].min(), df["v"].max()
+    a_min, a_max = df["a"].min(), df["a"].max()
+    F_min, F_max = df["F"].min(), df["F"].max()
 
     for i in range(len(df)):
-        ret, frame = cap_temp.read()
-        if not ret: break
-
-        # そのフレームまでのデータを抽出
-        df_sub = df.iloc[:i+1]
+        canvas = np.zeros((new_h, w_orig, 3), dtype=np.uint8)
+        df_s = df.iloc[:i+1]
         
-        # グラフ作成
-        s_img = create_dynamic_graph(df_sub, "Time", "Speed", "Speed (cm/s)", "red", graph_w, graph_h, x_max, s_max)
-        d_img = create_dynamic_graph(df_sub, "Time", "Distance", "Distance (cm)", "blue", graph_w, graph_h, x_max, d_max)
+        # 4枚のグラフ作成
+        g1 = create_dynamic_graph(df_s, "t", "x", "t", "x", "blue", graph_size, t_max, 0, x_max)
+        g2 = create_dynamic_graph(df_s, "t", "v", "t", "v", "red", graph_size, t_max, v_min, v_max)
+        g3 = create_dynamic_graph(df_s, "t", "a", "t", "a", "green", graph_size, t_max, a_min, a_max)
+        g4 = create_dynamic_graph(df_s, "x", "F", "x", "F", "purple", graph_size, x_max, F_min, F_max)
 
-        # 合成（右上）
-        m = 15
-        frame[m:m+graph_h, w_orig-m-graph_w:w_orig-m] = s_img
-        frame[m*2+graph_h:m*2+graph_h*2, w_orig-m-graph_w:w_orig-m] = d_img
+        # グラフ配置
+        canvas[0:graph_size, 0:graph_size] = g1
+        canvas[0:graph_size, graph_size:graph_size*2] = g2
+        canvas[0:graph_size, graph_size*2:graph_size*3] = g3
+        canvas[0:graph_size, graph_size*3:graph_size*4] = g4
+
+        # 数値表示 (グラフの直下)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        row_y = graph_size + 40
+        curr = df.iloc[i]
+        cv2.putText(canvas, f"x:{curr['x']:.3f}m", (10, row_y), font, 0.7, (255,255,255), 2)
+        cv2.putText(canvas, f"v:{curr['v']:.2f}m/s", (graph_size+10, row_y), font, 0.7, (255,255,255), 2)
+        cv2.putText(canvas, f"a:{curr['a']:.2f}m/s2", (graph_size*2+10, row_y), font, 0.7, (255,255,255), 2)
+        cv2.putText(canvas, f"F:{curr['F']:.3f}N", (graph_size*3+10, row_y), font, 0.7, (255,255,255), 2)
+
+        # 元動画
+        canvas[header_h:new_h, 0:w_orig] = frames_tracked[i]
         
-        final_writer.write(frame)
-        if i % 10 == 0: progress_bar.progress(min(0.4 + (i / len(df)) * 0.6, 1.0))
+        # 時刻t表示 (右下)
+        cv2.putText(canvas, f"t: {curr['t']:.2f} s", (w_orig-150, new_h-30), font, 1.0, (255,255,255), 2)
 
-    cap_temp.release()
-    final_writer.release()
-    status.success("すべての解析と動画生成が完了しました！")
-    
-    # UI表示とダウンロード
-    st.metric("走行距離", f"{df['Distance'].iloc[-1]:.1f} cm")
+        out.write(canvas)
+        if i % 10 == 0: progress_bar.progress(0.3 + (i / len(df)) * 0.7)
+
+    out.release()
+    status.success("全ての解析が完了しました！")
+
+    # ダウンロードセクション
+    st.divider()
+    csv = df[["t", "x", "v", "a", "F"]].to_csv(index=False).encode('utf_8_sig')
+    st.download_button("📊 CSVデータを保存", csv, "physics_data.csv", "text/csv")
     with open(final_video_path, "rb") as v:
-        st.download_button("🎥 グラフが動く動画を保存", data=v, file_name="moving_graph_analysis.mp4", mime="video/mp4")
-    
+        st.download_button("🎥 物理解析動画を保存", v, "physics_analysis.mp4", "video/mp4")
+
     os.remove(tfile.name)
-    os.remove(temp_video_path)
