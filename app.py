@@ -11,9 +11,9 @@ import io
 # Matplotlib設定
 plt.switch_backend('Agg')
 
-# --- グラフ描画関数 (単位とアスペクト比1:1に対応) ---
+# --- グラフ描画関数 (NumPy配列の画像を返す) ---
 def create_graph_image(df_sub, x_col, y_col, xlabel, ylabel, x_unit, y_unit, color, size, x_max, y_min, y_max):
-    # 1:1のアスペクト比を維持するため、figsizeを同じ値にする
+    # 1:1のアスペクト比を維持
     fig, ax = plt.subplots(figsize=(size/100, size/100), dpi=100)
     
     if len(df_sub) > 0:
@@ -24,10 +24,14 @@ def create_graph_image(df_sub, x_col, y_col, xlabel, ylabel, x_unit, y_unit, col
     ax.set_xlabel(f"{xlabel} [{x_unit}]", fontsize=12)
     ax.set_ylabel(f"{ylabel} [{y_unit}]", fontsize=12)
     ax.set_xlim(0, x_max if x_max > 0 else 1)
-    ax.set_ylim(y_min - abs(y_min)*0.1, y_max + abs(y_max)*0.1 if y_max > y_min else y_min + 1)
+    # y軸の幅を計算
+    y_range = y_max - y_min
+    if y_range == 0: y_range = 1
+    ax.set_ylim(y_min - y_range*0.1, y_max + y_range*0.1)
     ax.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
     
+    # 画像に変換
     buf = io.BytesIO()
     fig.savefig(buf, format="png", transparent=False, facecolor='white')
     buf.seek(0)
@@ -36,12 +40,11 @@ def create_graph_image(df_sub, x_col, y_col, xlabel, ylabel, x_unit, y_unit, col
     return cv2.resize(img, (size, size))
 
 st.set_page_config(page_title="Physics Lab: Cart Analysis Pro", layout="wide")
-st.title("🚀 物理実験：台車の運動解析システム (最終調整版)")
+st.title("🚀 物理実験：台車の運動解析システム")
 
-# --- サイドバー設定 ---
 st.sidebar.header("実験パラメータ")
 radius_cm = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1)
-mass = 0.1 # kg (固定)
+mass = 0.1 # kg
 mask_size = st.sidebar.slider("解析エリア半径 (px)", 50, 400, 200, 10)
 
 LOWER_GREEN = (np.array([35, 50, 50]), np.array([85, 255, 255]))
@@ -53,7 +56,6 @@ if uploaded_file is not None:
     tfile = tempfile.NamedTemporaryFile(delete=False)
     tfile.write(uploaded_file.read())
     
-    # --- Step 1: トラッキング ---
     cap = cv2.VideoCapture(tfile.name)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     w_orig = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -108,7 +110,6 @@ if uploaded_file is not None:
         if frame_count % 10 == 0: progress_bar.progress(min(frame_count / total_frames * 0.3, 0.3))
     cap.release()
 
-    # --- Step 2: 物理量計算 ---
     status.info("Step 2: 物理量計算中...")
     df = pd.DataFrame(data_log).interpolate().ffill().bfill()
     df["x"] = savgol_filter(df["x"], 15, 2)
@@ -116,24 +117,23 @@ if uploaded_file is not None:
     df["a"] = savgol_filter(df["v"].diff().fillna(0) * fps, 31, 2)
     df["F"] = mass * df["a"]
 
-    # スケール固定用
     t_max, x_max = df["t"].max(), df["x"].max()
     v_min, v_max = df["v"].min(), df["v"].max()
     a_min, a_max = df["a"].min(), df["a"].max()
     F_min, F_max = df["F"].min(), df["F"].max()
 
-    # ブラウザ上への表示（縦並び・1:1）
-    st.subheader("📊 物理グラフ (縦並び表示)")
+    # --- ブラウザ表示修正 (st.pyplotからst.imageへ) ---
+    st.subheader("📊 物理グラフプレビュー (縦並び 1:1)")
     plot_size = 500
-    st.pyplot(create_graph_image(df, "t", "x", "t", "x", "s", "m", "blue", plot_size, t_max, 0, x_max))
-    st.pyplot(create_graph_image(df, "t", "v", "t", "v", "s", "m/s", "red", plot_size, t_max, v_min, v_max))
-    st.pyplot(create_graph_image(df, "t", "a", "t", "a", "s", "m/s²", "green", plot_size, t_max, a_min, a_max))
-    st.pyplot(create_graph_image(df, "x", "F", "x", "F", "m", "N", "purple", plot_size, x_max, F_min, F_max))
+    st.image(create_graph_image(df, "t", "x", "t", "x", "s", "m", "blue", plot_size, t_max, 0, x_max), channels="BGR")
+    st.image(create_graph_image(df, "t", "v", "t", "v", "s", "m/s", "red", plot_size, t_max, v_min, v_max), channels="BGR")
+    st.image(create_graph_image(df, "t", "a", "t", "a", "s", "m/s2", "green", plot_size, t_max, a_min, a_max), channels="BGR")
+    st.image(create_graph_image(df, "x", "F", "x", "F", "m", "N", "purple", plot_size, x_max, F_min, F_max), channels="BGR")
 
     # --- Step 3: 動画合成 ---
-    status.info("Step 3: 動画を合成中... (完了までお待ちください)")
+    status.info("Step 3: 動画を合成中...")
     graph_v_size = w_orig // 4
-    header_h = graph_v_size + 80 # 数値表示用に少し余裕を持たせる
+    header_h = graph_v_size + 80 
     new_h = h_orig + header_h
     
     final_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
@@ -141,8 +141,6 @@ if uploaded_file is not None:
 
     cap_retry = cv2.VideoCapture(tfile.name)
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.8
-    thickness = 2
 
     for i in range(len(df)):
         ret, frame = cap_retry.read()
@@ -152,10 +150,10 @@ if uploaded_file is not None:
         df_s = df.iloc[:i+1]
         curr = df.iloc[i]
 
-        # 4枚のグラフ (1:1)
+        # 4枚のグラフ
         g1 = create_graph_image(df_s, "t", "x", "t", "x", "s", "m", "blue", graph_v_size, t_max, 0, x_max)
         g2 = create_graph_image(df_s, "t", "v", "t", "v", "s", "m/s", "red", graph_v_size, t_max, v_min, v_max)
-        g3 = create_graph_image(df_s, "t", "a", "t", "a", "s", "m/s²", "green", graph_v_size, t_max, a_min, a_max)
+        g3 = create_graph_image(df_s, "t", "a", "t", "a", "s", "m/s2", "green", graph_v_size, t_max, a_min, a_max)
         g4 = create_graph_image(df_s, "x", "F", "x", "F", "m", "N", "purple", graph_v_size, x_max, F_min, F_max)
 
         canvas[0:graph_v_size, 0:graph_v_size] = g1
@@ -163,26 +161,17 @@ if uploaded_file is not None:
         canvas[0:graph_v_size, graph_v_size*2:graph_v_size*3] = g3
         canvas[0:graph_v_size, graph_v_size*3:graph_v_size*4] = g4
 
-        # 数値表示 (各グラフの真下に配置、空白埋めでズレ防止)
-        # 透明にするため、長方形の描画(cv2.rectangle)は行わない
+        # 数値表示
         y_text = graph_v_size + 50
-        # 文字列フォーマット（右詰め、小数点固定）
-        x_str = f"x: {curr['x']:>7.3f} m"
-        v_str = f"v: {curr['v']:>7.2f} m/s"
-        a_str = f"a: {curr['a']:>7.2f} m/s2"
-        f_str = f"F: {curr['F']:>7.3f} N"
+        x_str = f"x:{curr['x']:>7.3f} m"
+        v_str = f"v:{curr['v']:>7.2f} m/s"
+        a_str = f"a:{curr['a']:>7.2f} m/s2"
+        f_str = f"F:{curr['F']:>7.3f} N"
 
-        cv2.putText(canvas, x_str, (10, y_text), font, font_scale, (255, 255, 255), thickness)
-        cv2.putText(canvas, v_str, (graph_v_size + 10, y_text), font, font_scale, (255, 255, 255), thickness)
-        cv2.putText(canvas, a_str, (graph_v_size * 2 + 10, y_text), font, font_scale, (255, 255, 255), thickness)
-        cv2.putText(canvas, f_str, (graph_v_size * 3 + 10, y_text), font, font_scale, (255, 255, 255), thickness)
-
-        # トラッキング点描画
-        if pd.notna(curr['gx']):
-            cv2.circle(frame, (int(curr['gx']), int(curr['gy'])), mask_size, (255, 255, 255), 2)
-            cv2.circle(frame, (int(curr['gx']), int(curr['gy'])), 5, (0, 255, 0), -1)
-            if pd.notna(curr['bx']):
-                cv2.circle(frame, (int(curr['bx']), int(curr['by'])), 5, (255, 0, 255), -1)
+        cv2.putText(canvas, x_str, (10, y_text), font, 0.8, (255, 255, 255), 2)
+        cv2.putText(canvas, v_str, (graph_v_size + 10, y_text), font, 0.8, (255, 255, 255), 2)
+        cv2.putText(canvas, a_str, (graph_v_size * 2 + 10, y_text), font, 0.8, (255, 255, 255), 2)
+        cv2.putText(canvas, f_str, (graph_v_size * 3 + 10, y_text), font, 0.8, (255, 255, 255), 2)
 
         canvas[header_h:new_h, 0:w_orig] = frame
         cv2.putText(canvas, f"t: {curr['t']:>6.2f} s", (w_orig - 220, new_h - 40), font, 1.2, (255, 255, 255), 3)
@@ -192,14 +181,14 @@ if uploaded_file is not None:
 
     cap_retry.release()
     out.release()
-    status.success("すべての解析が完了しました！")
+    status.success("解析完了！")
 
     st.divider()
-    # CSV出力 (拡張子を確実に.csvにする)
+    # CSV保存 (mimeタイプとファイル名を修正)
     csv_data = df[["t", "x", "v", "a", "F"]].to_csv(index=False).encode('utf_8_sig')
-    st.download_button(label="📊 CSVデータを保存", data=csv_data, file_name="physics_experiment_data.csv", mime="text/csv")
+    st.download_button(label="📊 CSVデータを保存", data=csv_data, file_name="physics_data.csv", mime="text/csv")
     
     with open(final_video_path, "rb") as v:
-        st.download_button(label="🎥 解析済み動画を保存", data=v, file_name="physics_analysis_final.mp4", mime="video/mp4")
+        st.download_button(label="🎥 解析済み動画を保存", data=v, file_name="physics_analysis.mp4", mime="video/mp4")
 
     os.remove(tfile.name)
