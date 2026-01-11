@@ -6,15 +6,19 @@ from scipy.signal import savgol_filter
 import tempfile
 import os
 
-st.set_page_config(page_title="台車解析アプリ V1 (Pink)", layout="wide")
-st.title("🏃‍♂️ 物理実験：台車の速度解析 (ピンクマーカー版)")
+# アプリのタイトルとレイアウト設定
+st.set_page_config(page_title="台車解析アプリ V1.1", layout="wide")
+st.title("🏃‍♂️ 物理実験：台車の速度解析 (円形マスク版)")
 
+# サイドバーの設定
 st.sidebar.header("設定")
-radius = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1) # 3.2cmの半分=1.6
+radius_cm = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1)
+mask_size = st.sidebar.slider("解析エリアの半径 (px)", 50, 300, 150, 10)
+st.sidebar.info("ピンクの点が認識されない場合は「解析エリアの半径」を大きくしてください。")
 
-# --- 色の定義 (緑とピンク) ---
-LOWER_GREEN = (np.array([30, 40, 40]), np.array([100, 255, 255]))
-LOWER_PINK = (np.array([140, 50, 50]), np.array([175, 255, 255]))
+# 色の設定 (緑とピンク)
+LOWER_GREEN = (np.array([30, 40, 40]), np.array([90, 255, 255]))
+LOWER_PINK = (np.array([140, 40, 40]), np.array([180, 255, 255]))
 
 uploaded_file = st.file_uploader("iPadで撮った動画を選択してください", type=["mp4", "mov"])
 
@@ -28,6 +32,7 @@ if uploaded_file is not None:
     h_orig = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+    # 動画書き出し準備
     out_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_writer = cv2.VideoWriter(out_video_path, fourcc, fps, (w_orig, h_orig))
@@ -38,7 +43,7 @@ if uploaded_file is not None:
     data_log = []
     total_angle = 0.0
     prev_angle = None
-    last_gx, last_gy = np.nan, np.nan
+    gx, gy = np.nan, np.nan
     frame_count = 0
 
     while cap.isOpened():
@@ -46,33 +51,48 @@ if uploaded_file is not None:
         if not ret: break
         
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask_roi = np.zeros((h_orig, w_orig), dtype=np.uint8)
-        cv2.rectangle(mask_roi, (0, h_orig // 2), (w_orig, h_orig), 255, -1)
-        hsv_masked = cv2.bitwise_and(hsv, hsv, mask=mask_roi)
         
-        gx = gy = bx = by = np.nan
-        
-        # 緑（中心）
-        mask_g = cv2.inRange(hsv_masked, LOWER_GREEN[0], LOWER_GREEN[1])
+        # 1. 緑（中心）を画面全体から探す
+        mask_g = cv2.inRange(hsv, LOWER_GREEN[0], LOWER_GREEN[1])
         con_g, _ = cv2.findContours(mask_g, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        new_gx, new_gy = np.nan, np.nan
         if con_g:
-            M = cv2.moments(max(con_g, key=cv2.contourArea))
+            # 最も面積が大きいものを中心候補とする
+            c = max(con_g, key=cv2.contourArea)
+            M = cv2.moments(c)
             if M["m00"] != 0:
-                gx, gy = M["m10"]/M["m00"], M["m01"]/M["m00"]
-                last_gx, last_gy = gx, gy
-                cv2.circle(frame, (int(gx), int(gy)), 10, (0, 255, 0), -1)
-        else: gx, gy = last_gx, last_gy
+                temp_gx, temp_gy = M["m10"]/M["m00"], M["m01"]/M["m00"]
+                
+                # 急激なジャンプ防止：前回と近ければ採用
+                if pd.isna(gx) or np.hypot(temp_gx - gx, temp_gy - gy) < 100:
+                    gx, gy = temp_gx, temp_gy
+        
+        bx, by = np.nan, np.nan
+        # 2. 緑が見つかっている場合のみ、その周辺にピンクを探す（円形マスク）
+        if pd.notna(gx):
+            circle_mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
+            cv2.circle(circle_mask, (int(gx), int(gy)), mask_size, 255, -1)
+            
+            hsv_near_wheel = cv2.bitwise_and(hsv, hsv, mask=circle_mask)
+            mask_p = cv2.inRange(hsv_near_wheel, LOWER_PINK[0], LOWER_PINK[1])
+            con_p, _ = cv2.findContours(mask_p, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if con_p:
+                c_p = max(con_p, key=cv2.contourArea)
+                M_p = cv2.moments(c_p)
+                if M_p["m00"] != 0:
+                    bx, by = M_p["m10"]/M_p["m00"], M_p["m01"]/M_p["m00"]
 
-        # ピンク（円周点）
-        mask_p = cv2.inRange(hsv_masked, LOWER_PINK[0], LOWER_PINK[1])
-        con_p, _ = cv2.findContours(mask_p, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if con_p:
-            M = cv2.moments(max(con_p, key=cv2.contourArea))
-            if M["m00"] != 0:
-                bx, by = M["m10"]/M["m00"], M["m01"]/M["m00"]
-                # ピンク色で描画
-                cv2.circle(frame, (int(bx), int(by)), 10, (147, 20, 255), -1)
+            # 動画への描画
+            # 認識しているホイールの円を描画
+            cv2.circle(frame, (int(gx), int(gy)), mask_size, (255, 255, 255), 2) # 白い外枠
+            cv2.circle(frame, (int(gx), int(gy)), 8, (0, 255, 0), -1)           # 中心（緑）
+            if pd.notna(bx):
+                cv2.circle(frame, (int(bx), int(by)), 8, (147, 20, 255), -1)   # マーカー（ピンク）
+                cv2.line(frame, (int(gx), int(gy)), (int(bx), int(by)), (200, 200, 200), 2) # 半径の線
 
+        # 角度計算
         if pd.notna(gx) and pd.notna(bx):
             current_angle = np.arctan2(by - gy, bx - gx)
             if prev_angle is not None:
@@ -83,7 +103,7 @@ if uploaded_file is not None:
             prev_angle = current_angle
 
         out_writer.write(frame)
-        data_log.append({"Time": frame_count/fps, "Distance": abs(total_angle) * radius})
+        data_log.append({"Time": frame_count/fps, "Distance": abs(total_angle) * radius_cm})
         frame_count += 1
         if frame_count % 10 == 0:
             progress_bar.progress(min(frame_count / total_frames, 1.0))
@@ -91,7 +111,8 @@ if uploaded_file is not None:
     cap.release()
     out_writer.release()
     
-    df = pd.DataFrame(data_log).interpolate().fillna(method='bfill')
+    # --- データ処理 ---
+    df = pd.DataFrame(data_log).interpolate().fillna(method='ffill').fillna(method='bfill')
     if len(df) > 31:
         df["Distance"] = savgol_filter(df["Distance"], window_length=15, polyorder=2)
         raw_speed = df["Distance"].diff().fillna(0) * fps
@@ -100,9 +121,10 @@ if uploaded_file is not None:
         df["Speed"] = df["Distance"].diff().fillna(0) * fps
     df["Speed"] = df["Speed"].clip(lower=0)
 
-    st.success("解析完了！")
-    
+    # --- 表示レイアウト ---
+    st.success("解析が完了しました！")
     col_metrics, col_charts = st.columns([1, 2])
+
     with col_metrics:
         st.subheader("📊 最終計測値")
         st.metric("合計時間", f"{df['Time'].iloc[-1]:.2f} s")
