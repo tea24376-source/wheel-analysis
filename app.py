@@ -12,7 +12,7 @@ import io
 plt.switch_backend('Agg')
 plt.rcParams['mathtext.fontset'] = 'cm'
 
-# --- グラフ描画関数 ---
+# --- グラフ描画関数 (ガード付き) ---
 def create_graph_image(df_sub, x_col, y_col, x_label_text, y_label_text, x_unit, y_unit, color, size, x_min, x_max, y_min, y_max):
     fig, ax = plt.subplots(figsize=(size/100, size/100), dpi=100)
     
@@ -24,10 +24,11 @@ def create_graph_image(df_sub, x_col, y_col, x_label_text, y_label_text, x_unit,
     ax.set_xlabel(f"${x_label_text}$ [{x_unit}]", fontsize=14)
     ax.set_ylabel(f"${y_label_text}$ [{y_unit}]", fontsize=14)
     
-    x_range = x_max - x_min if x_max != x_min else 1
+    # 軸範囲のエラー防止
+    x_range = max(float(x_max - x_min), 0.001)
     ax.set_xlim(x_min - x_range*0.05, x_max + x_range*0.05)
     
-    y_range = y_max - y_min if y_max != y_min else 1
+    y_range = max(float(y_max - y_min), 0.001)
     ax.set_ylim(y_min - y_range*0.1, y_max + y_range*0.1)
     
     ax.grid(True, linestyle='--', alpha=0.6)
@@ -49,7 +50,7 @@ st.title("🚀 CartGrapher Studio")
 # --- サイドバー：Kinema-Cart設定 ---
 st.sidebar.header("Kinema-Cart 設定")
 radius_cm = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1)
-mass = st.sidebar.number_input("台車の質量 $m$ (kg)", value=0.100, step=0.001, format="%.3f")
+mass = st.sidebar.number_input("台車の質量 $m$ (kg)", value=0.1, min_value=0.001, step=0.01, format="%.3f")
 mask_size = st.sidebar.slider("解析エリア半径 (px)", 50, 400, 200, 10)
 
 LOWER_GREEN = (np.array([35, 50, 50]), np.array([85, 255, 255]))
@@ -81,16 +82,17 @@ if uploaded_file is not None:
         ret, frame = cap.read()
         if not ret: break
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # 緑（中心）
         mask_g = cv2.inRange(hsv, LOWER_GREEN[0], LOWER_GREEN[1])
         con_g, _ = cv2.findContours(mask_g, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if con_g:
             c = max(con_g, key=cv2.contourArea)
             M = cv2.moments(c)
             if M["m00"] != 0:
-                curr_x, curr_y = M["m10"]/M["m00"], M["m01"]/M["m00"]
-                if pd.isna(gx) or np.hypot(curr_x - gx, curr_y - gy) < (w_orig/3):
-                    gx, gy = curr_x, curr_y
+                gx, gy = M["m10"]/M["m00"], M["m01"]/M["m00"]
 
+        # ピンク（外周）
         bx, by = np.nan, np.nan
         if pd.notna(gx):
             circle_mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
@@ -116,99 +118,103 @@ if uploaded_file is not None:
         if frame_count % 10 == 0: progress_bar.progress(min(frame_count / total_frames * 0.3, 0.3))
     cap.release()
 
-    # --- Step 2: 計算 ---
-    df = pd.DataFrame(data_log).interpolate().ffill().bfill()
+    # --- Step 2: 物理量計算 ---
+    df = pd.DataFrame(data_log).interpolate().ffill().bfill().fillna(0)
     df["x"] = savgol_filter(df["x"], 15, 2)
     df["v"] = savgol_filter(df["x"].diff().fillna(0) * fps, 31, 2)
     df["a"] = savgol_filter(df["v"].diff().fillna(0) * fps, 31, 2)
     df["F"] = mass * df["a"]
+    # 再度NaN埋め
+    df = df.fillna(0)
 
-    t_min, t_max = 0, df["t"].max()
-    x_min, x_max = df["x"].min(), df["x"].max()
-    v_min, v_max = df["v"].min(), df["v"].max()
-    a_min, a_max = df["a"].min(), df["a"].max()
-    F_min, F_max = df["F"].min(), df["F"].max()
+    # 全域のスケール取得
+    t_min, t_max = 0, float(df["t"].max())
+    x_min, x_max = float(df["x"].min()), float(df["x"].max())
+    v_min, v_max = float(df["v"].min()), float(df["v"].max())
+    a_min, a_max = float(df["a"].min()), float(df["a"].max())
+    F_min, F_max = float(df["F"].min()), float(df["F"].max())
 
+    # --- プレビュー表示 ---
     st.subheader("📊 物理グラフプレビュー")
-    plot_size = 500
-    # 注意: ここを st.image に修正してエラーを解消
-    st.image(create_graph_image(df, "t", "x", "t", "x", "s", "m", "blue", plot_size, t_min, t_max, x_min, x_max), channels="BGR")
-    st.image(create_graph_image(df, "t", "v", "t", "v", "s", "m/s", "red", plot_size, t_min, t_max, v_min, v_max), channels="BGR")
-    st.image(create_graph_image(df, "t", "a", "t", "a", "s", "m/s^2", "green", plot_size, t_min, t_max, a_min, a_max), channels="BGR")
-    st.image(create_graph_image(df, "x", "F", "x", "F", "m", "N", "purple", plot_size, x_min, x_max, F_min, F_max), channels="BGR")
+    p_size = 500
+    row1_c1, row1_c2 = st.columns(2)
+    with row1_c1: st.image(create_graph_image(df, "t", "x", "t", "x", "s", "m", "blue", p_size, t_min, t_max, x_min, x_max), channels="BGR")
+    with row1_c2: st.image(create_graph_image(df, "t", "v", "t", "v", "s", "m/s", "red", p_size, t_min, t_max, v_min, v_max), channels="BGR")
+    row2_c1, row2_c2 = st.columns(2)
+    with row2_c1: st.image(create_graph_image(df, "t", "a", "t", "a", "s", "m/s^2", "green", p_size, t_min, t_max, a_min, a_max), channels="BGR")
+    with row2_c2: st.image(create_graph_image(df, "x", "F", "x", "F", "m", "N", "purple", p_size, x_min, x_max, F_min, F_max), channels="BGR")
 
-    # --- ★追加機能：仕事 W の算出 ---
+    # --- ★ 仕事 W の計算セクション ---
     st.divider()
-    st.subheader("🧪 エネルギー解析：仕事 $W$ の算出")
-    st.write("$F-x$ グラフの面積（積分値）を計算します。")
+    st.subheader("🔬 エネルギー解析：仕事 $W$")
+    st.write("$F-x$ グラフの面積から、指定区間の仕事 $W$ を算出します。")
     
-    col_input1, col_input2, col_result = st.columns([2, 2, 3])
-    with col_input1:
-        t_start = st.number_input("開始時刻 $t_{start}$ [s]", 0.0, float(t_max), 0.0, step=0.1)
-    with col_input2:
-        t_end = st.number_input("終了時刻 $t_{end}$ [s]", 0.0, float(t_max), float(t_max), step=0.1)
+    calc_c1, calc_c2, calc_c3 = st.columns([2, 2, 3])
+    with calc_c1: t_s = st.number_input("開始時刻 $t$ [s]", 0.0, t_max, 0.0, 0.1)
+    with calc_c2: t_e = st.number_input("終了時刻 $t$ [s]", 0.0, t_max, t_max, 0.1)
     
-    df_work = df[(df['t'] >= t_start) & (df['t'] <= t_end)]
-    if len(df_work) > 1:
-        # 仕事 W = ∫ F dx (台形積分)
-        work_val = np.trapz(df_work['F'], df_work['x'])
-        with col_result:
-            st.metric(label="仕事 $W$ (Work)", value=f"{work_val:.4f} J")
-            st.caption(f"区間変位: {df_work['x'].iloc[0]:.3f} m → {df_work['x'].iloc[-1]:.3f} m")
+    df_w = df[(df['t'] >= t_s) & (df['t'] <= t_e)]
+    if len(df_w) > 1:
+        # 積分計算
+        w_val = np.trapz(df_w['F'], df_w['x'])
+        with calc_c3:
+            st.metric(label="仕事 $W$ [J]", value=f"{w_val:.4f} J")
+            st.info(f"区間変位: $\Delta x = {df_w['x'].iloc[-1] - df_w['x'].iloc[0]:.3f}$ m")
     else:
-        st.warning("有効な時間範囲を指定してください。")
+        st.warning("有効な範囲を選択してください")
 
     # --- Step 3: 動画合成 ---
-    status.info("解析完了。動画を生成中...")
-    graph_v_size = w_orig // 4
-    header_h = graph_v_size + 100 
-    new_h = h_orig + header_h
-    final_video_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
-    out = cv2.VideoWriter(final_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w_orig, new_h))
-    cap_retry = cv2.VideoCapture(tfile.name)
+    status.info("動画生成中...")
+    g_v_size = w_orig // 4
+    header_h = g_v_size + 100 
+    final_v_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
+    out = cv2.VideoWriter(final_v_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w_orig, h_orig + header_h))
+    
+    cap_re = cv2.VideoCapture(tfile.name)
     font_it = cv2.FONT_HERSHEY_SIMPLEX | cv2.FONT_ITALIC
 
     for i in range(len(df)):
-        ret, frame = cap_retry.read()
+        ret, frame = cap_re.read()
         if not ret: break
-        canvas = np.zeros((new_h, w_orig, 3), dtype=np.uint8)
-        df_s = df.iloc[:i+1]
+        canvas = np.zeros((h_orig + header_h, w_orig, 3), dtype=np.uint8)
         curr = df.iloc[i]
         
-        g1 = create_graph_image(df_s, "t", "x", "t", "x", "s", "m", "blue", graph_v_size, t_min, t_max, x_min, x_max)
-        g2 = create_graph_image(df_s, "t", "v", "t", "v", "s", "m/s", "red", graph_v_size, t_min, t_max, v_min, v_max)
-        g3 = create_graph_image(df_s, "t", "a", "t", "a", "s", "m/s^2", "green", graph_v_size, t_min, t_max, a_min, a_max)
-        g4 = create_graph_image(df_s, "x", "F", "x", "F", "m", "N", "purple", graph_v_size, x_min, x_max, F_min, F_max)
-        canvas[0:graph_v_size, 0:graph_v_size] = g1
-        canvas[0:graph_v_size, graph_v_size:graph_v_size*2] = g2
-        canvas[0:graph_v_size, graph_v_size*2:graph_v_size*3] = g3
-        canvas[0:graph_v_size, graph_v_size*3:graph_v_size*4] = g4
+        # 4つのグラフ
+        gs = [
+            create_graph_image(df.iloc[:i+1], "t", "x", "t", "x", "s", "m", "blue", g_v_size, t_min, t_max, x_min, x_max),
+            create_graph_image(df.iloc[:i+1], "t", "v", "t", "v", "s", "m/s", "red", g_v_size, t_min, t_max, v_min, v_max),
+            create_graph_image(df.iloc[:i+1], "t", "a", "t", "a", "s", "m/s^2", "green", g_v_size, t_min, t_max, a_min, a_max),
+            create_graph_image(df.iloc[:i+1], "x", "F", "x", "F", "m", "N", "purple", g_v_size, x_min, x_max, F_min, F_max)
+        ]
+        for idx, g_img in enumerate(gs):
+            canvas[0:g_v_size, idx*g_v_size:(idx+1)*g_v_size] = g_img
 
-        labels = [f"x: {curr['x']:7.3f} m", f"v: {curr['v']:7.2f} m/s", f"a: {curr['a']:7.2f} m/s2", f"F: {curr['F']:7.3f} N"]
-        for idx, text in enumerate(labels):
-            ts = cv2.getTextSize(text, font_it, 1.0, 2)[0]
-            cv2.putText(canvas, text, (idx*graph_v_size + (graph_v_size-ts[0])//2, graph_v_size+60), font_it, 1.0, (255,255,255), 2)
+        # 数値表示
+        labels = [f"x: {curr['x']:.3f} m", f"v: {curr['v']:.2f} m/s", f"a: {curr['a']:.2f} m/s2", f"F: {curr['F']:.3f} N"]
+        for idx, txt in enumerate(labels):
+            ts = cv2.getTextSize(txt, font_it, 0.9, 2)[0]
+            cv2.putText(canvas, txt, (idx*g_v_size + (g_v_size-ts[0])//2, g_v_size+60), font_it, 0.9, (255,255,255), 2)
 
+        # トラッキング描画
         if pd.notna(curr['gx']):
-            cv2.circle(frame, (int(curr['gx']), int(curr['gy'])), mask_size, (255, 255, 255), 2)
+            cv2.circle(frame, (int(curr['gx']), int(curr['gy'])), mask_size, (200, 200, 200), 2)
             cv2.circle(frame, (int(curr['gx']), int(curr['gy'])), 6, (0, 255, 0), -1)
             if pd.notna(curr['bx']):
                 cv2.circle(frame, (int(curr['bx']), int(curr['by'])), 6, (255, 0, 255), -1)
                 cv2.line(frame, (int(curr['gx']), int(curr['gy'])), (int(curr['bx']), int(curr['by'])), (255, 255, 255), 1)
 
-        canvas[header_h:new_h, 0:w_orig] = frame
-        t_txt = f"t: {curr['t']:6.2f} s"
-        t_sz = cv2.getTextSize(t_txt, font_it, 1.2, 3)[0]
-        cv2.putText(canvas, t_txt, (w_orig - t_sz[0] - 20, new_h - 40), font_it, 1.2, (255, 255, 255), 3)
+        canvas[header_h:, 0:w_orig] = frame
+        t_txt = f"t: {curr['t']:.2f} s"
+        t_sz = cv2.getTextSize(t_txt, font_it, 1.1, 2)[0]
+        cv2.putText(canvas, t_txt, (w_orig - t_sz[0] - 20, h_orig + header_h - 30), font_it, 1.1, (255, 255, 255), 2)
         out.write(canvas)
     
-    cap_retry.release()
+    cap_re.release()
     out.release()
-    status.success("解析完了！")
+    status.success("すべての解析が完了しました！")
 
     st.divider()
-    csv_data = df[["t", "x", "v", "a", "F"]].to_csv(index=False).encode('utf_8_sig')
-    st.download_button(label="📊 CSV保存", data=csv_data, file_name="cart_grapher_data.csv", mime="text/csv")
-    with open(final_video_path, "rb") as v:
-        st.download_button(label="🎥 解析済み動画保存", data=v, file_name="cart_grapher_analysis.mp4", mime="video/mp4")
+    st.download_button("📊 CSVデータを保存", df[["t", "x", "v", "a", "F"]].to_csv(index=False).encode('utf_8_sig'), "kinema_cart_data.csv", "text/csv")
+    with open(final_v_path, "rb") as f:
+        st.download_button("🎥 解析動画を保存", f, "cart_grapher_output.mp4", "video/mp4")
     os.remove(tfile.name)
