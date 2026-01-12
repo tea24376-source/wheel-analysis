@@ -2,62 +2,58 @@ import streamlit as st
 import cv2
 import numpy as np
 import pandas as pd
+from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
-import io
-import tempfile
-import os
+import io, tempfile, os
 
-# サーバーでの描画エラーを完全に防ぐ設定
+# サーバー用設定
 import matplotlib
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="CartGrapher")
-st.title("🚀 CartGrapher Studio (Rescue Mode)")
+st.set_page_config(page_title="CartGrapher Debug")
+st.title("🚀 CartGrapher Studio (Debug Mode)")
 
-# 1. 起動確認用のメッセージ
-st.success("App is running! サーバーは正常に起動しています。")
+uploaded_file = st.file_uploader("動画を選択", type=["mp4", "mov"])
 
-# 2. サイドバー
-radius_cm = st.sidebar.slider("半径(cm)", 0.5, 5.0, 1.6)
-mass = st.sidebar.number_input("質量(kg)", value=0.1)
-
-# 3. ファイルアップローダー
-uploaded_file = st.file_uploader("動画を選択してください", type=["mp4", "mov"])
-
-if uploaded_file is not None:
-    # 読み込み中のクラッシュを防ぐため、非常にシンプルな処理に徹します
+if uploaded_file:
     tfile = tempfile.NamedTemporaryFile(delete=False)
     tfile.write(uploaded_file.read())
     
     cap = cv2.VideoCapture(tfile.name)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps == 0 or fps is None: fps = 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     
-    data = []
-    # 最初の100フレームだけ解析（テスト用）
-    for i in range(100):
-        ret, frame = cap.read()
-        if not ret: break
-        # ここでは座標計算をせず、時間データだけ作成して動作テスト
-        data.append({"t": i/fps, "x": np.sin(i/10)})
+    # --- 安全な解析ループ ---
+    data_log = []
+    prog = st.progress(0.0)
     
-    cap.release()
-    os.unlink(tfile.name) # 一時ファイルを確実に削除
+    try:
+        for i in range(total_frames):
+            ret, frame = cap.read()
+            if not ret: break
+            # テスト用に時間と仮の座標を入れる（ここを後でトラッキングに差し替え）
+            data_log.append({"t": i/fps, "x": np.sin(i/10)})
+            
+            # ValueError対策：進捗率を0.0~1.0の間に強制的に収める
+            current_prog = min(max(i / total_frames, 0.0), 1.0)
+            prog.progress(current_prog)
+            
+        cap.release()
+        df = pd.DataFrame(data_log)
 
-    if data:
-        df = pd.DataFrame(data)
-        st.write("### 解析テスト結果")
+        if len(df) > 31: # データが十分にある時だけフィルタをかける
+            df["x"] = savgol_filter(df["x"], 11, 2)
+            df["v"] = df["x"].diff().fillna(0) * fps
         
-        # グラフ作成（エラー防止のため try-except で囲む）
-        try:
-            fig, ax = plt.subplots()
-            ax.plot(df["t"], df["x"])
-            ax.set_xlabel("Time (s)")
-            ax.set_ylabel("Position (m)")
-            st.pyplot(fig)
-        except Exception as e:
-            st.error(f"Graph Error: {e}")
+        st.success("解析成功！")
         
-        st.dataframe(df.head())
-    else:
-        st.error("動画を読み込めませんでした。")
+        # グラフ表示
+        fig, ax = plt.subplots()
+        ax.plot(df["t"], df["x"])
+        st.pyplot(fig)
+        
+    except Exception as e:
+        st.error(f"解析中にエラーが発生しました: {e}")
+    finally:
+        if os.path.exists(tfile.name):
+            os.unlink(tfile.name)
