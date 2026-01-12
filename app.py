@@ -44,12 +44,12 @@ def create_graph_image(df_sub, x_col, y_col, x_label_text, y_label_text, x_unit,
     return cv2.resize(img, (size, size))
 
 st.set_page_config(page_title="CartGrapher Studio", layout="wide")
-st.title("🚀 CartGrapher Studio (Pro V3.0)")
+st.title("🚀 CartGrapher Studio")
 
 # --- サイドバー：Kinema-Cart設定 ---
 st.sidebar.header("Kinema-Cart 設定")
 radius_cm = st.sidebar.slider("車輪の半径 (cm)", 0.5, 5.0, 1.6, 0.1)
-mass = st.sidebar.number_input("台車の質量 (kg)", value=0.1, step=0.01, format="%.3f")
+mass = st.sidebar.number_input("台車の質量 $m$ (kg)", value=0.100, step=0.001, format="%.3f")
 mask_size = st.sidebar.slider("解析エリア半径 (px)", 50, 400, 200, 10)
 
 LOWER_GREEN = (np.array([35, 50, 50]), np.array([85, 255, 255]))
@@ -131,31 +131,32 @@ if uploaded_file is not None:
 
     st.subheader("📊 物理グラフプレビュー")
     plot_size = 500
-    cols = st.columns(2)
-    with cols[0]: st.image(create_graph_image(df, "t", "x", "t", "x", "s", "m", "blue", plot_size, t_min, t_max, x_min, x_max), channels="BGR")
-    with cols[1]: st.image(create_graph_image(df, "t", "v", "t", "v", "s", "m/s", "red", plot_size, t_min, t_max, v_min, v_max), channels="BGR")
-    with cols[0]: st.image(create_graph_image(df, "t", "a", "t", "a", "s", "m/s^2", "green", plot_size, t_min, t_max, a_min, a_max), channels="BGR")
-    with cols[1]: st.image(create_graph_image(df, "x", "F", "x", "F", "m", "N", "purple", plot_size, x_min, x_max, F_min, F_max), channels="BGR")
+    # 注意: ここを st.image に修正してエラーを解消
+    st.image(create_graph_image(df, "t", "x", "t", "x", "s", "m", "blue", plot_size, t_min, t_max, x_min, x_max), channels="BGR")
+    st.image(create_graph_image(df, "t", "v", "t", "v", "s", "m/s", "red", plot_size, t_min, t_max, v_min, v_max), channels="BGR")
+    st.image(create_graph_image(df, "t", "a", "t", "a", "s", "m/s^2", "green", plot_size, t_min, t_max, a_min, a_max), channels="BGR")
+    st.image(create_graph_image(df, "x", "F", "x", "F", "m", "N", "purple", plot_size, x_min, x_max, F_min, F_max), channels="BGR")
 
-    # --- ★追加機能：仕事Wの算出 ---
+    # --- ★追加機能：仕事 W の算出 ---
     st.divider()
-    st.subheader("エネルギー解析：仕事 $W$ の算出")
+    st.subheader("🧪 エネルギー解析：仕事 $W$ の算出")
     st.write("$F-x$ グラフの面積（積分値）を計算します。")
     
-    c1, c2, c3 = st.columns([2, 2, 3])
-    with c1: t_start_input = st.number_input("開始時刻 $t_{start}$ [s]", 0.0, float(t_max), 0.0)
-    with c2: t_end_input = st.number_input("終了時刻 $t_{end}$ [s]", 0.0, float(t_max), float(t_max))
+    col_input1, col_input2, col_result = st.columns([2, 2, 3])
+    with col_input1:
+        t_start = st.number_input("開始時刻 $t_{start}$ [s]", 0.0, float(t_max), 0.0, step=0.1)
+    with col_input2:
+        t_end = st.number_input("終了時刻 $t_{end}$ [s]", 0.0, float(t_max), float(t_max), step=0.1)
     
-    # 積分計算
-    df_work = df[(df['t'] >= t_start_input) & (df['t'] <= t_end_input)]
+    df_work = df[(df['t'] >= t_start) & (df['t'] <= t_end)]
     if len(df_work) > 1:
-        # np.trapz(y, x) で F-x グラフの面積（積分）を計算
+        # 仕事 W = ∫ F dx (台形積分)
         work_val = np.trapz(df_work['F'], df_work['x'])
-        with c3:
-            st.metric(label="仕事 $W$ [J]", value=f"{work_val:.4f} J")
-            st.write(f"区間: $x = {df_work['x'].iloc[0]:.3f}$ to ${df_work['x'].iloc[-1]:.3f}$ [m]")
+        with col_result:
+            st.metric(label="仕事 $W$ (Work)", value=f"{work_val:.4f} J")
+            st.caption(f"区間変位: {df_work['x'].iloc[0]:.3f} m → {df_work['x'].iloc[-1]:.3f} m")
     else:
-        st.warning("有効な時間区間を入力してください。")
+        st.warning("有効な時間範囲を指定してください。")
 
     # --- Step 3: 動画合成 ---
     status.info("解析完了。動画を生成中...")
@@ -203,11 +204,11 @@ if uploaded_file is not None:
     
     cap_retry.release()
     out.release()
-    status.success("すべての処理が完了しました！")
+    status.success("解析完了！")
 
     st.divider()
     csv_data = df[["t", "x", "v", "a", "F"]].to_csv(index=False).encode('utf_8_sig')
-    st.download_button(label="📊 CSVデータを保存", data=csv_data, file_name="cart_grapher_data.csv", mime="text/csv")
+    st.download_button(label="📊 CSV保存", data=csv_data, file_name="cart_grapher_data.csv", mime="text/csv")
     with open(final_video_path, "rb") as v:
-        st.download_button(label="🎥 解析済み動画を保存", data=v, file_name="cart_grapher_analysis.mp4", mime="video/mp4")
+        st.download_button(label="🎥 解析済み動画保存", data=v, file_name="cart_grapher_analysis.mp4", mime="video/mp4")
     os.remove(tfile.name)
